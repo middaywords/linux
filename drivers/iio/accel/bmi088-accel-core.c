@@ -2,6 +2,8 @@
 /*
  * 3-axis accelerometer driver supporting following Bosch-Sensortec chips:
  *  - BMI088
+ *  - BMI085
+ *  - BMI090L
  *
  * Copyright (c) 2018-2021, Topic Embedded Products
  */
@@ -16,7 +18,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "bmi088-accel.h"
 
@@ -112,11 +114,6 @@ enum bmi088_odr_modes {
 	BMI088_ACCEL_MODE_ODR_1600 = 0xc,
 };
 
-struct bmi088_scale_info {
-	int scale;
-	u8 reg_range;
-};
-
 struct bmi088_accel_chip_info {
 	const char *name;
 	u8 chip_id;
@@ -150,7 +147,7 @@ const struct regmap_config bmi088_regmap_conf = {
 	.volatile_table = &bmi088_volatile_table,
 	.cache_type = REGCACHE_RBTREE,
 };
-EXPORT_SYMBOL_NS_GPL(bmi088_regmap_conf, IIO_BMI088);
+EXPORT_SYMBOL_NS_GPL(bmi088_regmap_conf, "IIO_BMI088");
 
 static int bmi088_accel_power_up(struct bmi088_accel_data *data)
 {
@@ -590,7 +587,7 @@ int bmi088_accel_core_probe(struct device *dev, struct regmap *regmap,
 
 	return ret;
 }
-EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_probe, IIO_BMI088);
+EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_probe, "IIO_BMI088");
 
 
 void bmi088_accel_core_remove(struct device *dev)
@@ -604,9 +601,9 @@ void bmi088_accel_core_remove(struct device *dev)
 	pm_runtime_set_suspended(dev);
 	bmi088_accel_power_down(data);
 }
-EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_remove, IIO_BMI088);
+EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_remove, "IIO_BMI088");
 
-static int __maybe_unused bmi088_accel_runtime_suspend(struct device *dev)
+static int bmi088_accel_runtime_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct bmi088_accel_data *data = iio_priv(indio_dev);
@@ -614,7 +611,7 @@ static int __maybe_unused bmi088_accel_runtime_suspend(struct device *dev)
 	return bmi088_accel_power_down(data);
 }
 
-static int __maybe_unused bmi088_accel_runtime_resume(struct device *dev)
+static int bmi088_accel_runtime_resume(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct bmi088_accel_data *data = iio_priv(indio_dev);
@@ -622,13 +619,10 @@ static int __maybe_unused bmi088_accel_runtime_resume(struct device *dev)
 	return bmi088_accel_power_up(data);
 }
 
-const struct dev_pm_ops bmi088_accel_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
-	SET_RUNTIME_PM_OPS(bmi088_accel_runtime_suspend,
-			   bmi088_accel_runtime_resume, NULL)
-};
-EXPORT_SYMBOL_NS_GPL(bmi088_accel_pm_ops, IIO_BMI088);
+EXPORT_NS_GPL_RUNTIME_DEV_PM_OPS(bmi088_accel_pm_ops,
+				 bmi088_accel_runtime_suspend,
+				 bmi088_accel_runtime_resume, NULL,
+				 IIO_BMI088);
 
 MODULE_AUTHOR("Niek van Agt <niek.van.agt@topicproducts.com>");
 MODULE_LICENSE("GPL v2");

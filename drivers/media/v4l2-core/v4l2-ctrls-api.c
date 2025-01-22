@@ -89,10 +89,7 @@ static int req_to_user(struct v4l2_ext_control *c,
 /* Helper function: copy the initial control value back to the caller */
 static int def_to_user(struct v4l2_ext_control *c, struct v4l2_ctrl *ctrl)
 {
-	int idx;
-
-	for (idx = 0; idx < ctrl->elems; idx++)
-		ctrl->type_ops->init(ctrl, idx, ctrl->p_new);
+	ctrl->type_ops->init(ctrl, 0, ctrl->p_new);
 
 	return ptr_to_user(c, ctrl, ctrl->p_new);
 }
@@ -105,8 +102,8 @@ static int user_to_new(struct v4l2_ext_control *c, struct v4l2_ctrl *ctrl)
 
 	ctrl->is_new = 0;
 	if (ctrl->is_dyn_array &&
-	    c->size > ctrl->p_dyn_alloc_elems * ctrl->elem_size) {
-		void *old = ctrl->p_dyn;
+	    c->size > ctrl->p_array_alloc_elems * ctrl->elem_size) {
+		void *old = ctrl->p_array;
 		void *tmp = kvzalloc(2 * c->size, GFP_KERNEL);
 
 		if (!tmp)
@@ -115,14 +112,13 @@ static int user_to_new(struct v4l2_ext_control *c, struct v4l2_ctrl *ctrl)
 		memcpy(tmp + c->size, ctrl->p_cur.p, ctrl->elems * ctrl->elem_size);
 		ctrl->p_new.p = tmp;
 		ctrl->p_cur.p = tmp + c->size;
-		ctrl->p_dyn = tmp;
-		ctrl->p_dyn_alloc_elems = c->size / ctrl->elem_size;
+		ctrl->p_array = tmp;
+		ctrl->p_array_alloc_elems = c->size / ctrl->elem_size;
 		kvfree(old);
 	}
 
 	if (ctrl->is_ptr && !ctrl->is_string) {
 		unsigned int elems = c->size / ctrl->elem_size;
-		unsigned int idx;
 
 		if (copy_from_user(ctrl->p_new.p, c->ptr, c->size))
 			return -EFAULT;
@@ -130,8 +126,7 @@ static int user_to_new(struct v4l2_ext_control *c, struct v4l2_ctrl *ctrl)
 		if (ctrl->is_dyn_array)
 			ctrl->new_elems = elems;
 		else if (ctrl->is_array)
-			for (idx = elems; idx < ctrl->elems; idx++)
-				ctrl->type_ops->init(ctrl, idx, ctrl->p_new);
+			ctrl->type_ops->init(ctrl, elems, ctrl->p_new);
 		return 0;
 	}
 
@@ -156,6 +151,7 @@ static int user_to_new(struct v4l2_ext_control *c, struct v4l2_ctrl *ctrl)
 			 */
 			if (strlen(ctrl->p_new.p_char) == ctrl->maximum && last)
 				return -ERANGE;
+			ctrl->is_new = 1;
 		}
 		return ret;
 	default:
@@ -467,7 +463,7 @@ int v4l2_g_ext_ctrls_common(struct v4l2_ctrl_handler *hdl,
 
 			if (is_default)
 				ret = def_to_user(cs->controls + idx, ref->ctrl);
-			else if (is_request && ref->p_req_dyn_enomem)
+			else if (is_request && ref->p_req_array_enomem)
 				ret = -ENOMEM;
 			else if (is_request && ref->p_req_valid)
 				ret = req_to_user(cs->controls + idx, ref);
@@ -499,12 +495,7 @@ EXPORT_SYMBOL(v4l2_g_ext_ctrls);
 /* Validate a new control */
 static int validate_new(const struct v4l2_ctrl *ctrl, union v4l2_ctrl_ptr p_new)
 {
-	unsigned int idx;
-	int err = 0;
-
-	for (idx = 0; !err && idx < ctrl->new_elems; idx++)
-		err = ctrl->type_ops->validate(ctrl, idx, p_new);
-	return err;
+	return ctrl->type_ops->validate(ctrl, p_new);
 }
 
 /* Validate controls. */
@@ -762,9 +753,10 @@ static int get_ctrl(struct v4l2_ctrl *ctrl, struct v4l2_ext_control *c)
 		for (i = 0; i < master->ncontrols; i++)
 			cur_to_new(master->cluster[i]);
 		ret = call_op(master, g_volatile_ctrl);
-		new_to_user(c, ctrl);
+		if (!ret)
+			ret = new_to_user(c, ctrl);
 	} else {
-		cur_to_user(c, ctrl);
+		ret = cur_to_user(c, ctrl);
 	}
 	v4l2_ctrl_unlock(master);
 	return ret;
@@ -779,7 +771,10 @@ int v4l2_g_ctrl(struct v4l2_ctrl_handler *hdl, struct v4l2_control *control)
 	if (!ctrl || !ctrl->is_int)
 		return -EINVAL;
 	ret = get_ctrl(ctrl, &c);
-	control->value = c.value;
+
+	if (!ret)
+		control->value = c.value;
+
 	return ret;
 }
 EXPORT_SYMBOL(v4l2_g_ctrl);
@@ -820,10 +815,11 @@ static int set_ctrl_lock(struct v4l2_fh *fh, struct v4l2_ctrl *ctrl,
 	int ret;
 
 	v4l2_ctrl_lock(ctrl);
-	user_to_new(c, ctrl);
-	ret = set_ctrl(fh, ctrl, 0);
+	ret = user_to_new(c, ctrl);
 	if (!ret)
-		cur_to_user(c, ctrl);
+		ret = set_ctrl(fh, ctrl, 0);
+	if (!ret)
+		ret = cur_to_user(c, ctrl);
 	v4l2_ctrl_unlock(ctrl);
 	return ret;
 }
@@ -989,6 +985,42 @@ int __v4l2_ctrl_modify_range(struct v4l2_ctrl *ctrl,
 }
 EXPORT_SYMBOL(__v4l2_ctrl_modify_range);
 
+int __v4l2_ctrl_modify_dimensions(struct v4l2_ctrl *ctrl,
+				  u32 dims[V4L2_CTRL_MAX_DIMS])
+{
+	unsigned int elems = 1;
+	unsigned int i;
+	void *p_array;
+
+	lockdep_assert_held(ctrl->handler->lock);
+
+	if (!ctrl->is_array || ctrl->is_dyn_array)
+		return -EINVAL;
+
+	for (i = 0; i < ctrl->nr_of_dims; i++)
+		elems *= dims[i];
+	if (elems == 0)
+		return -EINVAL;
+	p_array = kvzalloc(2 * elems * ctrl->elem_size, GFP_KERNEL);
+	if (!p_array)
+		return -ENOMEM;
+	kvfree(ctrl->p_array);
+	ctrl->p_array_alloc_elems = elems;
+	ctrl->elems = elems;
+	ctrl->new_elems = elems;
+	ctrl->p_array = p_array;
+	ctrl->p_new.p = p_array;
+	ctrl->p_cur.p = p_array + elems * ctrl->elem_size;
+	for (i = 0; i < ctrl->nr_of_dims; i++)
+		ctrl->dims[i] = dims[i];
+	ctrl->type_ops->init(ctrl, 0, ctrl->p_cur);
+	cur_to_new(ctrl);
+	send_event(NULL, ctrl, V4L2_EVENT_CTRL_CH_VALUE |
+			       V4L2_EVENT_CTRL_CH_DIMENSIONS);
+	return 0;
+}
+EXPORT_SYMBOL(__v4l2_ctrl_modify_dimensions);
+
 /* Implement VIDIOC_QUERY_EXT_CTRL */
 int v4l2_query_ext_ctrl(struct v4l2_ctrl_handler *hdl, struct v4l2_query_ext_ctrl *qc)
 {
@@ -1025,35 +1057,40 @@ int v4l2_query_ext_ctrl(struct v4l2_ctrl_handler *hdl, struct v4l2_query_ext_ctr
 		if (id >= node2id(hdl->ctrl_refs.prev)) {
 			ref = NULL; /* Yes, so there is no next control */
 		} else if (ref) {
+			struct v4l2_ctrl_ref *pos = ref;
+
 			/*
 			 * We found a control with the given ID, so just get
 			 * the next valid one in the list.
 			 */
-			list_for_each_entry_continue(ref, &hdl->ctrl_refs, node) {
-				is_compound = ref->ctrl->is_array ||
-					ref->ctrl->type >= V4L2_CTRL_COMPOUND_TYPES;
-				if (id < ref->ctrl->id &&
-				    (is_compound & mask) == match)
+			ref = NULL;
+			list_for_each_entry_continue(pos, &hdl->ctrl_refs, node) {
+				is_compound = pos->ctrl->is_array ||
+					pos->ctrl->type >= V4L2_CTRL_COMPOUND_TYPES;
+				if (id < pos->ctrl->id &&
+				    (is_compound & mask) == match) {
+					ref = pos;
 					break;
+				}
 			}
-			if (&ref->node == &hdl->ctrl_refs)
-				ref = NULL;
 		} else {
+			struct v4l2_ctrl_ref *pos;
+
 			/*
 			 * No control with the given ID exists, so start
 			 * searching for the next largest ID. We know there
 			 * is one, otherwise the first 'if' above would have
 			 * been true.
 			 */
-			list_for_each_entry(ref, &hdl->ctrl_refs, node) {
-				is_compound = ref->ctrl->is_array ||
-					ref->ctrl->type >= V4L2_CTRL_COMPOUND_TYPES;
-				if (id < ref->ctrl->id &&
-				    (is_compound & mask) == match)
+			list_for_each_entry(pos, &hdl->ctrl_refs, node) {
+				is_compound = pos->ctrl->is_array ||
+					pos->ctrl->type >= V4L2_CTRL_COMPOUND_TYPES;
+				if (id < pos->ctrl->id &&
+				    (is_compound & mask) == match) {
+					ref = pos;
 					break;
+				}
 			}
-			if (&ref->node == &hdl->ctrl_refs)
-				ref = NULL;
 		}
 	}
 	mutex_unlock(hdl->lock);
@@ -1152,7 +1189,7 @@ int v4l2_querymenu(struct v4l2_ctrl_handler *hdl, struct v4l2_querymenu *qm)
 		return -EINVAL;
 
 	/* Use mask to see if this menu item should be skipped */
-	if (ctrl->menu_skip_mask & (1ULL << i))
+	if (i < BITS_PER_LONG_LONG && (ctrl->menu_skip_mask & BIT_ULL(i)))
 		return -EINVAL;
 	/* Empty menu items should also be skipped */
 	if (ctrl->type == V4L2_CTRL_TYPE_MENU) {

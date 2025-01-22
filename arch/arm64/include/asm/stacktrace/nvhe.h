@@ -20,8 +20,8 @@
 
 #include <asm/stacktrace/common.h>
 
-/*
- * kvm_nvhe_unwind_init - Start an unwind from the given nVHE HYP fp and pc
+/**
+ * kvm_nvhe_unwind_init() - Start an unwind from the given nVHE HYP fp and pc
  *
  * @state : unwind_state to initialize
  * @fp    : frame pointer at which to start the unwinding.
@@ -31,7 +31,7 @@ static inline void kvm_nvhe_unwind_init(struct unwind_state *state,
 					unsigned long fp,
 					unsigned long pc)
 {
-	unwind_init_common(state, NULL);
+	unwind_init_common(state);
 
 	state->fp = fp;
 	state->pc = pc;

@@ -687,7 +687,7 @@ static struct usb_driver mwifiex_usb_driver = {
 	.suspend = mwifiex_usb_suspend,
 	.resume = mwifiex_usb_resume,
 	.soft_unbind = 1,
-	.drvwrap.driver = {
+	.driver = {
 		.coredump = mwifiex_usb_coredump,
 	},
 };
@@ -745,8 +745,6 @@ static void mwifiex_usb_port_resync(struct mwifiex_adapter *adapter)
 	if (adapter->usb_mc_status) {
 		for (i = 0; i < adapter->priv_num; i++) {
 			priv = adapter->priv[i];
-			if (!priv)
-				continue;
 			if ((priv->bss_role == MWIFIEX_BSS_ROLE_UAP &&
 			     !priv->bss_started) ||
 			    (priv->bss_role == MWIFIEX_BSS_ROLE_STA &&
@@ -758,8 +756,6 @@ static void mwifiex_usb_port_resync(struct mwifiex_adapter *adapter)
 	} else {
 		for (i = 0; i < adapter->priv_num; i++) {
 			priv = adapter->priv[i];
-			if (!priv)
-				continue;
 			if ((priv->bss_role == MWIFIEX_BSS_ROLE_UAP &&
 			     priv->bss_started) ||
 			    (priv->bss_role == MWIFIEX_BSS_ROLE_STA &&
@@ -770,8 +766,7 @@ static void mwifiex_usb_port_resync(struct mwifiex_adapter *adapter)
 		}
 		for (i = 0; i < adapter->priv_num; i++) {
 			priv = adapter->priv[i];
-			if (priv)
-				priv->usb_port = active_port;
+			priv->usb_port = active_port;
 		}
 		for (i = 0; i < MWIFIEX_TX_DATA_PORT; i++) {
 			if (active_port == card->port[i].tx_data_ep)
@@ -911,14 +906,14 @@ static int mwifiex_usb_prepare_tx_aggr_skb(struct mwifiex_adapter *adapter,
 		memcpy(payload, skb_tmp->data, skb_tmp->len);
 		if (skb_queue_empty(&port->tx_aggr.aggr_list)) {
 			/* do not padding for last packet*/
-			*(u16 *)payload = cpu_to_le16(skb_tmp->len);
-			*(u16 *)&payload[2] =
+			*(__le16 *)payload = cpu_to_le16(skb_tmp->len);
+			*(__le16 *)&payload[2] =
 				cpu_to_le16(MWIFIEX_TYPE_AGGR_DATA_V2 | 0x80);
 			skb_trim(skb_aggr, skb_aggr->len - pad);
 		} else {
 			/* add aggregation interface header */
-			*(u16 *)payload = cpu_to_le16(skb_tmp->len + pad);
-			*(u16 *)&payload[2] =
+			*(__le16 *)payload = cpu_to_le16(skb_tmp->len + pad);
+			*(__le16 *)&payload[2] =
 				cpu_to_le16(MWIFIEX_TYPE_AGGR_DATA_V2);
 		}
 
@@ -1097,9 +1092,9 @@ send_aggr_buf:
 		}
 
 		payload = skb->data;
-		*(u16 *)&payload[2] =
+		*(__le16 *)&payload[2] =
 			cpu_to_le16(MWIFIEX_TYPE_AGGR_DATA_V2 | 0x80);
-		*(u16 *)payload = cpu_to_le16(skb->len);
+		*(__le16 *)payload = cpu_to_le16(skb->len);
 		skb_send = skb;
 		context = &port->tx_data_list[port->tx_data_ix++];
 		return mwifiex_usb_construct_send_urb(adapter, port, ep,

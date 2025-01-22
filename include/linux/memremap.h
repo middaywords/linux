@@ -25,6 +25,7 @@ struct vmem_altmap {
 	unsigned long free;
 	unsigned long align;
 	unsigned long alloc;
+	bool inaccessible;
 };
 
 /*
@@ -108,7 +109,7 @@ struct dev_pagemap_ops {
  * @altmap: pre-allocated/reserved memory for vmemmap allocations
  * @ref: reference count that pins the devm_memremap_pages() mapping
  * @done: completion for @ref
- * @type: memory type: see MEMORY_* in memory_hotplug.h
+ * @type: memory type: see MEMORY_* above in memremap.h
  * @flags: PGMAP_* flags to specify defailed behavior
  * @vmemmap_shift: structural definition of how the vmemmap page metadata
  *      is populated, specifically the metadata page order.
@@ -135,9 +136,14 @@ struct dev_pagemap {
 	int nr_range;
 	union {
 		struct range range;
-		struct range ranges[0];
+		DECLARE_FLEX_ARRAY(struct range, ranges);
 	};
 };
+
+static inline bool pgmap_has_memory_failure(struct dev_pagemap *pgmap)
+{
+	return pgmap->ops && pgmap->ops->memory_failure;
+}
 
 static inline struct vmem_altmap *pgmap_altmap(struct dev_pagemap *pgmap)
 {
@@ -182,6 +188,7 @@ static inline bool folio_is_device_coherent(const struct folio *folio)
 }
 
 #ifdef CONFIG_ZONE_DEVICE
+void zone_device_page_init(struct page *page);
 void *memremap_pages(struct dev_pagemap *pgmap, int nid);
 void memunmap_pages(struct dev_pagemap *pgmap);
 void *devm_memremap_pages(struct device *dev, struct dev_pagemap *pgmap);
@@ -190,8 +197,6 @@ struct dev_pagemap *get_dev_pagemap(unsigned long pfn,
 		struct dev_pagemap *pgmap);
 bool pgmap_pfn_valid(struct dev_pagemap *pgmap, unsigned long pfn);
 
-unsigned long vmem_altmap_offset(struct vmem_altmap *altmap);
-void vmem_altmap_free(struct vmem_altmap *altmap, unsigned long nr_pfns);
 unsigned long memremap_compat_align(void);
 #else
 static inline void *devm_memremap_pages(struct device *dev,
@@ -220,16 +225,6 @@ static inline struct dev_pagemap *get_dev_pagemap(unsigned long pfn,
 static inline bool pgmap_pfn_valid(struct dev_pagemap *pgmap, unsigned long pfn)
 {
 	return false;
-}
-
-static inline unsigned long vmem_altmap_offset(struct vmem_altmap *altmap)
-{
-	return 0;
-}
-
-static inline void vmem_altmap_free(struct vmem_altmap *altmap,
-		unsigned long nr_pfns)
-{
 }
 
 /* when memremap_pages() is disabled all archs can remap a single page */

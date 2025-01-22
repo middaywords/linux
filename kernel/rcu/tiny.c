@@ -44,7 +44,7 @@ static struct rcu_ctrlblk rcu_ctrlblk = {
 
 void rcu_barrier(void)
 {
-	wait_rcu_gp(call_rcu);
+	wait_rcu_gp(call_rcu_hurry);
 }
 EXPORT_SYMBOL(rcu_barrier);
 
@@ -97,6 +97,7 @@ static inline bool rcu_reclaim_tiny(struct rcu_head *head)
 
 	trace_rcu_invoke_callback("", head);
 	f = head->func;
+	debug_rcu_head_callback(head);
 	WRITE_ONCE(head->func, (rcu_callback_t)0L);
 	f(head);
 	rcu_lock_release(&rcu_callback_map);
@@ -104,7 +105,7 @@ static inline bool rcu_reclaim_tiny(struct rcu_head *head)
 }
 
 /* Invoke the RCU callbacks whose grace period has elapsed.  */
-static __latent_entropy void rcu_process_callbacks(struct softirq_action *unused)
+static __latent_entropy void rcu_process_callbacks(void)
 {
 	struct rcu_head *next, *list;
 	unsigned long flags;
@@ -129,9 +130,7 @@ static __latent_entropy void rcu_process_callbacks(struct softirq_action *unused
 		next = list->next;
 		prefetch(next);
 		debug_rcu_head_unqueue(list);
-		local_bh_disable();
 		rcu_reclaim_tiny(list);
-		local_bh_enable();
 		list = next;
 	}
 }
@@ -154,9 +153,15 @@ void synchronize_rcu(void)
 			 lock_is_held(&rcu_lock_map) ||
 			 lock_is_held(&rcu_sched_lock_map),
 			 "Illegal synchronize_rcu() in RCU read-side critical section");
+	preempt_disable();
 	WRITE_ONCE(rcu_ctrlblk.gp_seq, rcu_ctrlblk.gp_seq + 2);
+	preempt_enable();
 }
 EXPORT_SYMBOL_GPL(synchronize_rcu);
+
+static void tiny_rcu_leak_callback(struct rcu_head *rhp)
+{
+}
 
 /*
  * Post an RCU callback to be invoked after the end of an RCU grace
@@ -165,9 +170,20 @@ EXPORT_SYMBOL_GPL(synchronize_rcu);
  */
 void call_rcu(struct rcu_head *head, rcu_callback_t func)
 {
+	static atomic_t doublefrees;
 	unsigned long flags;
 
-	debug_rcu_head_queue(head);
+	if (debug_rcu_head_queue(head)) {
+		if (atomic_inc_return(&doublefrees) < 4) {
+			pr_err("%s(): Double-freed CB %p->%pS()!!!  ", __func__, head, head->func);
+			mem_dump_obj(head);
+		}
+
+		if (!__is_kvfree_rcu_offset((unsigned long)head->func))
+			WRITE_ONCE(head->func, tiny_rcu_leak_callback);
+		return;
+	}
+
 	head->func = func;
 	head->next = NULL;
 
@@ -182,6 +198,16 @@ void call_rcu(struct rcu_head *head, rcu_callback_t func)
 	}
 }
 EXPORT_SYMBOL_GPL(call_rcu);
+
+/*
+ * Store a grace-period-counter "cookie".  For more information,
+ * see the Tree RCU header comment.
+ */
+void get_completed_synchronize_rcu_full(struct rcu_gp_oldstate *rgosp)
+{
+	rgosp->rgos_norm = RCU_GET_STATE_COMPLETED;
+}
+EXPORT_SYMBOL_GPL(get_completed_synchronize_rcu_full);
 
 /*
  * Return a grace-period-counter "cookie".  For more information,
@@ -221,15 +247,12 @@ bool poll_state_synchronize_rcu(unsigned long oldstate)
 EXPORT_SYMBOL_GPL(poll_state_synchronize_rcu);
 
 #ifdef CONFIG_KASAN_GENERIC
-void kvfree_call_rcu(struct rcu_head *head, rcu_callback_t func)
+void kvfree_call_rcu(struct rcu_head *head, void *ptr)
 {
-	if (head) {
-		void *ptr = (void *) head - (unsigned long) func;
-
+	if (head)
 		kasan_record_aux_stack_noalloc(ptr);
-	}
 
-	__kvfree_call_rcu(head, func);
+	__kvfree_call_rcu(head, ptr);
 }
 EXPORT_SYMBOL_GPL(kvfree_call_rcu);
 #endif
@@ -238,4 +261,5 @@ void __init rcu_init(void)
 {
 	open_softirq(RCU_SOFTIRQ, rcu_process_callbacks);
 	rcu_early_boot_tests();
+	tasks_cblist_init_generic();
 }

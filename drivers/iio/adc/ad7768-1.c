@@ -539,25 +539,15 @@ static void ad7768_regulator_disable(void *data)
 	regulator_disable(st->vref);
 }
 
-static void ad7768_clk_disable(void *data)
-{
-	struct ad7768_state *st = data;
-
-	clk_disable_unprepare(st->mclk);
-}
-
 static int ad7768_set_channel_label(struct iio_dev *indio_dev,
 						int num_channels)
 {
 	struct ad7768_state *st = iio_priv(indio_dev);
 	struct device *device = indio_dev->dev.parent;
-	struct fwnode_handle *fwnode;
-	struct fwnode_handle *child;
 	const char *label;
 	int crt_ch = 0;
 
-	fwnode = dev_fwnode(device);
-	fwnode_for_each_child_node(fwnode, child) {
+	device_for_each_child_node_scoped(device, child) {
 		if (fwnode_property_read_u32(child, "reg", &crt_ch))
 			continue;
 
@@ -600,17 +590,9 @@ static int ad7768_probe(struct spi_device *spi)
 	if (ret)
 		return ret;
 
-	st->mclk = devm_clk_get(&spi->dev, "mclk");
+	st->mclk = devm_clk_get_enabled(&spi->dev, "mclk");
 	if (IS_ERR(st->mclk))
 		return PTR_ERR(st->mclk);
-
-	ret = clk_prepare_enable(st->mclk);
-	if (ret < 0)
-		return ret;
-
-	ret = devm_add_action_or_reset(&spi->dev, ad7768_clk_disable, st);
-	if (ret)
-		return ret;
 
 	st->mclk_freq = clk_get_rate(st->mclk);
 
@@ -673,7 +655,7 @@ MODULE_DEVICE_TABLE(spi, ad7768_id_table);
 
 static const struct of_device_id ad7768_of_match[] = {
 	{ .compatible = "adi,ad7768-1" },
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ad7768_of_match);
 

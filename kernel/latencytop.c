@@ -65,7 +65,7 @@ static struct latency_record latency_record[MAXLR];
 int latencytop_enabled;
 
 #ifdef CONFIG_SYSCTL
-static int sysctl_latencytop(struct ctl_table *table, int write, void *buffer,
+static int sysctl_latencytop(const struct ctl_table *table, int write, void *buffer,
 		size_t *lenp, loff_t *ppos)
 {
 	int err;
@@ -85,7 +85,6 @@ static struct ctl_table latencytop_sysctl[] = {
 		.mode       = 0644,
 		.proc_handler   = sysctl_latencytop,
 	},
-	{}
 };
 #endif
 
@@ -112,7 +111,7 @@ static void __sched
 account_global_scheduler_latency(struct task_struct *tsk,
 				 struct latency_record *lat)
 {
-	int firstnonnull = MAXLR + 1;
+	int firstnonnull = MAXLR;
 	int i;
 
 	/* skip kernel threads for now */
@@ -150,7 +149,7 @@ account_global_scheduler_latency(struct task_struct *tsk,
 	}
 
 	i = firstnonnull;
-	if (i >= MAXLR - 1)
+	if (i >= MAXLR)
 		return;
 
 	/* Allocted a new one: */
